@@ -212,6 +212,10 @@ jobs:
     timeout-minutes: 45
     steps:
       - uses: actions/checkout@v4
+      # Cached PyO3 modules (seeded from main; keyed on rust/**). Without them
+      # the editable install below compiles the Rust extensions from source,
+      # which was 8.5 of the job's 20 minutes.
+      - uses: ./.github/actions/download-rust-ext
       - uses: ./.github/actions/download-sgl-router
         with:
           artifact_name: ${{ needs.sgl-router-build.outputs.artifact_name }}
