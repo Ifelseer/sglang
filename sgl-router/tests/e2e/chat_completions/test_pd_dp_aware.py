@@ -36,15 +36,12 @@ RANKS = frozenset(range(DP_SIZE))
 _METRIC_RE = re.compile(r"^([\w:]+)\{([^}]*)\}\s+(-?\d+(?:\.\d+)?)\s*$")
 _LABEL_RE = re.compile(r'(\w+)="([^"]*)"')
 
-# Same env as the engine's PD CI fixture, plus the prefill-side override: a plain
-# dp2 prefill defaults to follow_bootstrap_room and checks the room against
-# attn_dp_rank, which is 0 on every replica, so a room for rank 1 is rejected.
+# Same env as the engine's PD CI fixture.
 _MOONCAKE_ENV = {
     "MC_TCP_ENABLE_CONNECTION_POOL": "true",
     "MC_MIN_RPC_PORT": "61000",
     "MC_MAX_RPC_PORT": "65000",
     "SGLANG_ENABLE_RANK_CONSENSUS_CHECKER": "1",
-    "SGLANG_DISAGGREGATION_FORCE_QUERY_PREFILL_DP_RANK": "1",
 }
 
 
@@ -217,6 +214,21 @@ def _prefill_tree_blocks(router_url: str, worker_url: str) -> float:
     return total
 
 
+def _cold_cache(topo: Topology) -> None:
+    """Flush both engines and wait for the router's tree to drop their blocks.
+
+    A prompt sharing any cached block with a rank (the chat template is one)
+    is pinned to that rank ahead of load, so a spread test must start cold
+    whatever ran before it.
+    """
+    resp = httpx.post(f"{topo.router.base_url}/flush_cache", timeout=30.0)
+    assert resp.status_code == 200, resp.text
+    deadline = time.time() + 30.0
+    while _prefill_tree_blocks(topo.router.base_url, topo.prefill.url) > 0:
+        assert time.time() < deadline, "router kept prefill blocks after flush"
+        time.sleep(0.2)
+
+
 def _chat(
     topo: Topology, prompt: str, *, max_tokens: int, stream: bool = False
 ) -> httpx.Response:
@@ -257,6 +269,7 @@ def _long_prompt(tag: str) -> str:
 def test_concurrent_requests_use_every_prefill_and_decode_rank(topology):
     """Eight in flight at once land on both prefill and both decode ranks."""
     topo = topology
+    _cold_cache(topo)
     max_tokens = 48
     p0, d0 = _prefilled(topo.prefill.url), _decoded(topo.decode.url)
     results: list[httpx.Response | Exception] = [None] * 8  # type: ignore[list-item]
